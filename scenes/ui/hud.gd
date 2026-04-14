@@ -5,6 +5,9 @@ extends CanvasLayer
 @onready var crosshair: TextureRect = $Crosshair
 @onready var interact_hint: Label = $InteractHint
 @onready var pause_menu: Control = $PauseMenu
+@onready var resume_button: Button = $PauseMenu/PanelContainer/VBox/ResumeButton
+@onready var main_menu_button: Button = $PauseMenu/PanelContainer/VBox/MainMenuButton
+@onready var quit_button: Button = $PauseMenu/PanelContainer/VBox/QuitButton
 
 
 func _ready() -> void:
@@ -12,6 +15,13 @@ func _ready() -> void:
 	GameManager.score_changed.connect(_on_score_changed)
 	GameManager.game_paused.connect(_on_game_paused)
 	GameManager.game_over.connect(_on_game_over)
+
+	resume_button.pressed.connect(func() -> void: GameManager.toggle_pause())
+	main_menu_button.pressed.connect(func() -> void:
+		GameManager.toggle_pause()
+		SceneTransition.change_scene_with_reset("res://scenes/ui/main_menu.tscn")
+	)
+	quit_button.pressed.connect(func() -> void: get_tree().quit())
 
 	health_bar.max_value = GameManager.max_health
 	health_bar.value = GameManager.health

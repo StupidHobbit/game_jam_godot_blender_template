@@ -1,0 +1,88 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scenes/ui/hud.gd" id="1_hud"]
+
+[node name="HUD" type="CanvasLayer"]
+script = ExtResource("1_hud")
+
+[node name="MarginContainer" type="MarginContainer" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 16
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 16
+mouse_filter = 2
+
+[node name="VBox" type="VBoxContainer" parent="MarginContainer"]
+layout_mode = 2
+
+[node name="HealthBar" type="ProgressBar" parent="MarginContainer/VBox"]
+custom_minimum_size = Vector2(200, 20)
+max_value = 100.0
+value = 100.0
+
+[node name="ScoreLabel" type="Label" parent="MarginContainer/VBox"]
+text = "Score: 0"
+
+[node name="Crosshair" type="TextureRect" parent="."]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -8.0
+offset_top = -8.0
+offset_right = 8.0
+offset_bottom = 8.0
+mouse_filter = 2
+
+[node name="InteractHint" type="Label" parent="."]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -100.0
+offset_top = 40.0
+offset_right = 100.0
+offset_bottom = 60.0
+horizontal_alignment = 1
+visible = false
+text = "Press E to interact"
+
+[node name="PauseMenu" type="Control" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+visible = false
+mouse_filter = 0
+
+[node name="PanelContainer" type="PanelContainer" parent="PauseMenu"]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -120.0
+offset_top = -120.0
+offset_right = 120.0
+offset_bottom = 120.0
+
+[node name="VBox" type="VBoxContainer" parent="PauseMenu/PanelContainer"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="Label" type="Label" parent="PauseMenu/PanelContainer/VBox"]
+text = "PAUSED"
+horizontal_alignment = 1
+
+[node name="ResumeButton" type="Button" parent="PauseMenu/PanelContainer/VBox"]
+text = "Resume"
+
+[node name="MainMenuButton" type="Button" parent="PauseMenu/PanelContainer/VBox"]
+text = "Main Menu"
+
+[node name="QuitButton" type="Button" parent="PauseMenu/PanelContainer/VBox"]
+text = "Quit"

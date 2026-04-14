@@ -2,16 +2,20 @@ extends CanvasLayer
 
 signal transition_finished()
 
-@onready var _color_rect: ColorRect = $ColorRect
-@onready var _animation_player: AnimationPlayer = $AnimationPlayer
-
+var _color_rect: ColorRect
 var _is_transitioning: bool = false
 
 
 func _ready() -> void:
 	layer = 10
+	process_mode = Node.PROCESS_MODE_ALWAYS
+
+	_color_rect = ColorRect.new()
 	_color_rect.color = Color.BLACK
 	_color_rect.modulate.a = 0.0
+	_color_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_color_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_color_rect)
 
 
 func change_scene(path: String, duration: float = 0.5) -> void:

@@ -23,7 +23,7 @@ signal interacted(interactable: Node3D)
 @onready var interact_ray: RayCast3D = $CameraPivot/Camera3D/InteractRay
 @onready var animation_player: AnimationPlayer = $AnimationPlayer
 
-const GRAVITY: float = ProjectSettings.get_setting("physics/3d/default_gravity")
+var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity")
 
 
 func _ready() -> void:
@@ -57,7 +57,7 @@ func _rotate_camera(mouse_delta: Vector2) -> void:
 
 func _apply_gravity(delta: float) -> void:
 	if not is_on_floor():
-		velocity.y -= GRAVITY * delta
+		velocity.y -= _gravity * delta
 
 
 func _handle_jump() -> void:

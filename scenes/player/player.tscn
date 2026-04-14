@@ -1,4 +1,4 @@
-[gd_scene load_steps=4 format=3 uid="uid://player"]
+[gd_scene load_steps=4 format=3]
 
 [ext_resource type="Script" path="res://scenes/player/player.gd" id="1_player"]
 
@@ -6,19 +6,15 @@
 radius = 0.4
 height = 1.8
 
-[sub_resource type="CylinderShape3D" id="CylinderShape3D_1"]
-height = 0.1
-radius = 0.35
-
 [node name="Player" type="CharacterBody3D"]
 script = ExtResource("1_player")
+groups = ["player"]
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
 shape = SubResource("CapsuleShape3D_1")
 
 [node name="MeshRoot" type="Node3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
 
 [node name="CameraPivot" type="Node3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.6, 0)
