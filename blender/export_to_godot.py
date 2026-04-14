@@ -14,16 +14,20 @@ import bpy
 import os
 
 
-EXPORT_PATH = os.path.join(os.path.dirname(bpy.data.filepath), "..", "assets", "models")
+_BLEND_DIR = os.path.dirname(bpy.data.filepath)
+_ASSETS_DIR = os.path.join(_BLEND_DIR, "..", "assets")
+EXPORT_PATH = os.path.join(_ASSETS_DIR, "models")
+TEXTURES_PATH = os.path.join(_ASSETS_DIR, "textures")
 
 
 def _available_gltf_params() -> set:
     return {p.identifier for p in bpy.ops.export_scene.gltf.get_rna_type().properties}
 
 
-def _safe_export(filepath: str) -> None:
+def _safe_export(filepath: str, output_dir: str) -> None:
     """Call gltf exporter with only params supported by the current Blender build."""
     available = _available_gltf_params()
+    textures_rel = os.path.relpath(TEXTURES_PATH, output_dir)
 
     # Minimal required params — always present in any Blender 3/4 build
     kwargs: dict = {
@@ -45,7 +49,7 @@ def _safe_export(filepath: str) -> None:
         "export_normals": True,
         "export_tangents": True,
         "export_uvs": True,
-        "export_texture_dir": "textures",
+        "export_texture_dir": textures_rel,
         # Vertex colors (API changed in Blender 4.2)
         "export_vertex_color": "MATERIAL",
         "export_colors": True,
@@ -91,7 +95,7 @@ def export_object(obj: bpy.types.Object, output_dir: str) -> None:
     filepath = os.path.join(output_dir, f"{obj.name}.gltf")
     bpy.ops.object.select_all(action="DESELECT")
     obj.select_set(True)
-    _safe_export(filepath)
+    _safe_export(filepath, output_dir)
     print(f"[OK] Exported: {filepath}")
 
 
