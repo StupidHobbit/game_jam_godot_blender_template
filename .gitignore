@@ -1,0 +1,16 @@
+# Godot
+.godot/
+*.translation
+export_presets.cfg
+
+# Blender
+*.blend1
+*.blend2
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
