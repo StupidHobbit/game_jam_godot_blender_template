@@ -2,8 +2,18 @@
 Blender → Godot 4 Level Export Script
 
 ARCHITECTURE:
-  Collection "Geometry"  → unique static geo (floor, walls, terrain)
-                           exported as one .gltf, instanced once in .tscn
+  Collection "Geometry"  → all static geo: floor, walls, terrain AND grass.
+                           Objects WITHOUT Geometry Nodes modifier:
+                             → exported as level_01_geo.gltf (export_apply=True)
+                           Objects WITH a Geometry Nodes modifier (grass scatter):
+                             → exported as level_01_grass.gltf
+                               (export_apply=False + export_gpu_instances=True)
+                               Godot imports as MultiMeshInstance3D (1 draw call,
+                               mesh stored once via EXT_mesh_gpu_instancing)
+                           Detection is automatic — no separate collection needed.
+                           IMPORTANT: do NOT add "Realize Instances" node in the
+                           Geometry Nodes graph, or instances will be baked into
+                           unique geometry and the file will bloat.
   Collection "Props"     → repeating props (trees, barrels, rocks)
                            each UNIQUE MESH exported once as .gltf
                            all INSTANCES placed in .tscn via Transform3D
@@ -13,15 +23,19 @@ ARCHITECTURE:
 
 HOW TO USE:
   1. Model unique geometry in "Geometry" collection
-  2. Model each prop ONCE, then duplicate with Alt+D (linked duplicate)
+  2. Add grass: create a plane (grass_surface), add Geometry Nodes modifier,
+     scatter grass_blade instances — NO Realize Instances node!
+     Place grass_surface in "Geometry" collection alongside other geo.
+  3. Model each prop ONCE, then duplicate with Alt+D (linked duplicate)
      Place all prop instances in "Props" collection
-  3. Add Empty objects in "Markers" collection with Custom Properties
-  4. Run: blender --background level_01.blend --python blender/export_level.py
+  4. Add Empty objects in "Markers" collection with Custom Properties
+  5. Run: blender --background level_01.blend --python blender/export_level.py
 
 RESULT:
-  assets/models/levels/level_01_geo.gltf     ← unique geometry
-  assets/models/props/<name>.gltf            ← each unique prop mesh (once)
-  scenes/levels/level_01.tscn               ← full scene with all instances
+  assets/models/levels/level_01_geo.gltf    ← regular geometry
+  assets/models/levels/level_01_grass.gltf  ← grass (EXT_mesh_gpu_instancing)
+  assets/models/props/<name>.gltf           ← each unique prop mesh (once)
+  scenes/levels/level_01.tscn              ← full scene with all instances
 """
 
 import bpy
@@ -54,7 +68,13 @@ def _available_gltf_params() -> set:
     return {p.identifier for p in bpy.ops.export_scene.gltf.get_rna_type().properties}
 
 
-def _build_gltf_kwargs(filepath: str, export_dir: str, animations: bool = False) -> dict:
+def _build_gltf_kwargs(
+    filepath: str,
+    export_dir: str,
+    animations: bool = False,
+    apply_modifiers: bool = True,
+    gpu_instances: bool = False,
+) -> dict:
     available = _available_gltf_params()
     textures_rel = os.path.relpath(_TEXTURES_PATH, export_dir)
 
@@ -63,13 +83,18 @@ def _build_gltf_kwargs(filepath: str, export_dir: str, animations: bool = False)
         "use_selection": True,
         "export_format": "GLTF_SEPARATE",
         "export_yup": True,
-        "export_apply": True,
+        "export_apply": apply_modifiers,
         "export_materials": "EXPORT",
         "export_image_format": "AUTO",
         "export_animations": animations,
         "export_lights": False,
         "export_cameras": False,
     }
+
+    # EXT_mesh_gpu_instancing — supported in Blender 4.x
+    # Keeps Geometry Nodes instances compact (mesh stored once, transforms as array)
+    if gpu_instances and "export_gpu_instances" in available:
+        kwargs["export_gpu_instances"] = True
 
     optional: dict = {
         "export_normals": True,
@@ -94,29 +119,88 @@ def _build_gltf_kwargs(filepath: str, export_dir: str, animations: bool = False)
     return kwargs
 
 
-def export_geometry() -> str:
-    """Export unique level geometry as a single .gltf."""
+def _has_geometry_nodes(obj: bpy.types.Object) -> bool:
+    """Return True if the object has at least one Geometry Nodes modifier."""
+    return any(mod.type == "NODES" for mod in obj.modifiers)
+
+
+def export_geometry() -> tuple[str, str]:
+    """
+    Export the 'Geometry' collection as up to two .gltf files:
+      - level_01_geo.gltf   — regular meshes (export_apply=True)
+      - level_01_grass.gltf — meshes with Geometry Nodes modifier
+                              (export_apply=False + export_gpu_instances=True)
+                              so EXT_mesh_gpu_instancing is preserved and Godot
+                              imports them as MultiMeshInstance3D (1 draw call).
+
+    Returns (geo_res, grass_res) — res:// paths, empty string if nothing exported.
+    """
     os.makedirs(GEO_EXPORT_DIR, exist_ok=True)
-    filepath = os.path.join(GEO_EXPORT_DIR, f"{_BLEND_NAME}_geo.gltf")
 
     col = bpy.data.collections.get(GEOMETRY_COLLECTION)
-    bpy.ops.object.select_all(action="DESELECT")
-
-    if col:
-        for obj in col.all_objects:
-            if obj.type == "MESH":
-                obj.select_set(True)
-    else:
+    if not col:
         print(f"[WARN] Collection '{GEOMETRY_COLLECTION}' not found.")
-        return ""
+        return "", ""
 
-    if not any(o.select_get() for o in bpy.data.objects):
-        print("[WARN] No geometry objects selected.")
-        return ""
+    regular_objs: list[bpy.types.Object] = []
+    gn_objs: list[bpy.types.Object] = []
 
-    bpy.ops.export_scene.gltf(**_build_gltf_kwargs(filepath, GEO_EXPORT_DIR))
-    print(f"[OK] Geometry: {filepath}")
-    return f"res://assets/models/levels/{_BLEND_NAME}_geo.gltf"
+    for obj in col.all_objects:
+        if obj.type != "MESH":
+            continue
+        if _has_geometry_nodes(obj):
+            gn_objs.append(obj)
+        else:
+            regular_objs.append(obj)
+
+    geo_res = ""
+    grass_res = ""
+
+    # --- Regular geometry ---
+    if regular_objs:
+        filepath = os.path.join(GEO_EXPORT_DIR, f"{_BLEND_NAME}_geo.gltf")
+        bpy.ops.object.select_all(action="DESELECT")
+        for obj in regular_objs:
+            obj.select_set(True)
+        bpy.ops.export_scene.gltf(**_build_gltf_kwargs(filepath, GEO_EXPORT_DIR))
+        geo_res = f"res://assets/models/levels/{_BLEND_NAME}_geo.gltf"
+        print(f"[OK] Geometry ({len(regular_objs)} object(s)): {filepath}")
+    else:
+        print(f"[INFO] No regular mesh objects in '{GEOMETRY_COLLECTION}'.")
+
+    # --- Geometry Nodes objects (grass, foliage, etc.) ---
+    if gn_objs:
+        filepath = os.path.join(GEO_EXPORT_DIR, f"{_BLEND_NAME}_grass.gltf")
+        bpy.ops.object.select_all(action="DESELECT")
+        for obj in gn_objs:
+            obj.select_set(True)
+
+        available = _available_gltf_params()
+        if "export_gpu_instances" not in available:
+            print(
+                "[WARN] export_gpu_instances not available in this Blender version. "
+                "Grass will be exported with apply_modifiers=True (instances baked). "
+                "Upgrade to Blender 4.x for proper EXT_mesh_gpu_instancing support."
+            )
+            bpy.ops.export_scene.gltf(
+                **_build_gltf_kwargs(filepath, GEO_EXPORT_DIR, apply_modifiers=True)
+            )
+        else:
+            bpy.ops.export_scene.gltf(
+                **_build_gltf_kwargs(
+                    filepath,
+                    GEO_EXPORT_DIR,
+                    apply_modifiers=False,
+                    gpu_instances=True,
+                )
+            )
+
+        grass_res = f"res://assets/models/levels/{_BLEND_NAME}_grass.gltf"
+        print(f"[OK] Grass/GN ({len(gn_objs)} object(s)): {filepath}")
+    else:
+        print(f"[INFO] No Geometry Nodes objects in '{GEOMETRY_COLLECTION}'.")
+
+    return geo_res, grass_res
 
 
 def export_props() -> dict[str, str]:
@@ -219,6 +303,7 @@ def _mat4_to_godot(obj: bpy.types.Object) -> str:
 
 def generate_tscn(
     geo_res: str,
+    grass_res: str,
     prop_instances: list[dict],
     markers: list[dict],
 ) -> None:
@@ -228,6 +313,8 @@ def generate_tscn(
     unique_scenes: list[str] = []
     if geo_res:
         unique_scenes.append(geo_res)
+    if grass_res:
+        unique_scenes.append(grass_res)
     for item in prop_instances + markers:
         path = item.get("scene", "")
         if path and path not in unique_scenes:
@@ -245,6 +332,10 @@ def generate_tscn(
 
     if geo_res:
         lines.append(f'[node name="Geometry" parent="." instance=ExtResource("{res_id_map[geo_res]}")]')
+        lines.append("")
+
+    if grass_res:
+        lines.append(f'[node name="Grass" parent="." instance=ExtResource("{res_id_map[grass_res]}")]')
         lines.append("")
 
     # Player spawn marker (special — just a Marker3D, no instancing)
@@ -292,11 +383,11 @@ def main() -> None:
         return
 
     print(f"\n=== Exporting level: {_BLEND_NAME} ===\n")
-    geo_res = export_geometry()
+    geo_res, grass_res = export_geometry()
     mesh_to_res = export_props()
     prop_instances = collect_prop_instances(mesh_to_res)
     markers = collect_markers()
-    generate_tscn(geo_res, prop_instances, markers)
+    generate_tscn(geo_res, grass_res, prop_instances, markers)
 
     total_props = len(prop_instances)
     unique_meshes = len(mesh_to_res)
