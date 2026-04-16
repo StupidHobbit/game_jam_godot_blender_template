@@ -24,6 +24,35 @@ def _available_gltf_params() -> set:
     return {p.identifier for p in bpy.ops.export_scene.gltf.get_rna_type().properties}
 
 
+def _report_summary(messages: list[tuple[str, str]]) -> None:
+    if not messages:
+        return
+
+    for level, message in messages:
+        print(f"[{level}] {message}")
+
+    wm = bpy.context.window_manager
+    if wm is None:
+        return
+
+    def draw(self, _context) -> None:
+        for level, message in messages:
+            icon = {
+                "INFO": "INFO",
+                "WARN": "ERROR",
+                "ERROR": "CANCEL",
+            }.get(level, "INFO")
+            self.layout.label(text=message, icon=icon)
+
+    title = "Export Report"
+    if any(level == "ERROR" for level, _ in messages):
+        title = "Export Failed"
+    elif any(level == "WARN" for level, _ in messages):
+        title = "Export Finished with Warnings"
+
+    wm.popup_menu(draw, title=title, icon="INFO")
+
+
 def _safe_export(filepath: str, output_dir: str) -> None:
     """Call gltf exporter with only params supported by the current Blender build."""
     available = _available_gltf_params()
@@ -90,37 +119,43 @@ def prepare_mesh(obj: bpy.types.Object) -> None:
     bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
 
 
-def export_object(obj: bpy.types.Object, output_dir: str) -> None:
+def export_object(obj: bpy.types.Object, output_dir: str, messages: list[tuple[str, str]]) -> None:
     os.makedirs(output_dir, exist_ok=True)
     filepath = os.path.join(output_dir, f"{obj.name}.gltf")
     bpy.ops.object.select_all(action="DESELECT")
     obj.select_set(True)
     _safe_export(filepath, output_dir)
-    print(f"[OK] Exported: {filepath}")
+    messages.append(("INFO", f"Exported: {filepath}"))
 
 
 def export_all_meshes() -> None:
+    messages: list[tuple[str, str]] = []
     mesh_objects = [obj for obj in bpy.data.objects if obj.type == "MESH"]
     if not mesh_objects:
-        print("[WARN] No mesh objects found in scene.")
+        messages.append(("WARN", "No mesh objects found in scene."))
+        _report_summary(messages)
         return
     for obj in mesh_objects:
         prepare_mesh(obj)
         category = str(obj.get("godot_category", "props"))
-        export_object(obj, os.path.join(EXPORT_PATH, category))
-    print(f"\n[DONE] Exported {len(mesh_objects)} mesh(es) to: {EXPORT_PATH}")
+        export_object(obj, os.path.join(EXPORT_PATH, category), messages)
+    messages.append(("INFO", f"Exported {len(mesh_objects)} mesh(es) to: {EXPORT_PATH}"))
+    _report_summary(messages)
 
 
 def export_selected_only() -> None:
+    messages: list[tuple[str, str]] = []
     selected = [obj for obj in bpy.context.selected_objects if obj.type == "MESH"]
     if not selected:
-        print("[WARN] No mesh objects selected.")
+        messages.append(("WARN", "No mesh objects selected."))
+        _report_summary(messages)
         return
     for obj in selected:
         prepare_mesh(obj)
         category = str(obj.get("godot_category", "props"))
-        export_object(obj, os.path.join(EXPORT_PATH, category))
-    print(f"\n[DONE] Exported {len(selected)} selected mesh(es).")
+        export_object(obj, os.path.join(EXPORT_PATH, category), messages)
+    messages.append(("INFO", f"Exported {len(selected)} selected mesh(es)."))
+    _report_summary(messages)
 
 
 if __name__ == "__main__":

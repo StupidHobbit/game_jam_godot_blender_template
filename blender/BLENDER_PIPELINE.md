@@ -66,10 +66,20 @@ Object Properties → Custom Properties:
 
 ### Экспорт уровня
 
+**Способ 1 — из Blender Scripting вкладки (рекомендуется при разработке):**
+```
+Scripting → Open → выбери blender/export_level.py → Run Script
+```
+
+Вывод скрипта (`print`) отображается в системной консоли Blender:
+- **Windows**: `Window → Toggle System Console`
+- **macOS / Linux**: запусти Blender из терминала (`/Applications/Blender.app/Contents/MacOS/Blender`), вывод появится там
+
+**Способ 2 — из терминала:**
 ```bash
-# Экспорт геометрии + генерация .tscn с маркерами
 blender --background level_01.blend --python blender/export_level.py
 ```
+Вывод появляется прямо в терминале.
 
 Результат:
 ```

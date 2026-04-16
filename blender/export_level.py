@@ -2,14 +2,8 @@
 Blender → Godot 4 Level Export Script
 
 ARCHITECTURE:
-  Collection "Geometry"  → all static geo: floor, walls, terrain AND grass.
-                           Objects WITHOUT Geometry Nodes modifier:
-                             → exported as level_01_geo.gltf (export_apply=True)
-                           Objects WITH a Geometry Nodes modifier (grass scatter):
-                             → instances collected via depsgraph.object_instances
-                             → each UNIQUE MESH exported once as a .gltf
-                             → MultiMeshInstance3D written directly into .tscn
-                               (mesh stored once, transforms as array — no duplication)
+  Collection "Geometry"  → all static geo: floor, walls, terrain.
+                           All mesh objects are exported together as <level>_geo.gltf.
   Collection "Props"     → repeating props (trees, barrels, rocks)
                            each UNIQUE MESH exported once as .gltf
                            all INSTANCES placed in .tscn via Transform3D
@@ -18,18 +12,14 @@ ARCHITECTURE:
                            Custom Properties: type, scene
 
 HOW TO USE:
-  1. Model unique geometry in "Geometry" collection
-  2. Add grass: create a plane (grass_surface), add Geometry Nodes modifier,
-     scatter grass_blade instances. Place grass_surface in "Geometry" collection.
-     The script detects it automatically by the presence of a NODES modifier.
-  3. Model each prop ONCE, then duplicate with Alt+D (linked duplicate)
+  1. Model level geometry in "Geometry" collection
+  2. Model each prop ONCE, then duplicate with Alt+D (linked duplicate)
      Place all prop instances in "Props" collection
-  4. Add Empty objects in "Markers" collection with Custom Properties
-  5. Run: blender --background level_01.blend --python blender/export_level.py
+  3. Add Empty objects in "Markers" collection with Custom Properties
+  4. Run: blender --background level_01.blend --python blender/export_level.py
 
 RESULT:
-  assets/models/levels/level_01_geo.gltf         ← regular geometry
-  assets/models/levels/grass/<mesh>.gltf         ← each unique grass mesh (once)
+  assets/models/levels/level_01_geo.gltf        ← level geometry
   assets/models/props/<name>.gltf               ← each unique prop mesh (once)
   scenes/levels/level_01.tscn                   ← full scene with all instances
 """
@@ -48,7 +38,6 @@ _SCENES_DIR = os.path.join(_BLEND_DIR, "..", "scenes", "levels")
 _TEXTURES_PATH = os.path.join(_ASSETS_DIR, "textures")
 
 GEO_EXPORT_DIR = os.path.join(_ASSETS_DIR, "models", "levels")
-GRASS_EXPORT_DIR = os.path.join(_ASSETS_DIR, "models", "levels", "grass")
 PROPS_EXPORT_DIR = os.path.join(_ASSETS_DIR, "models", "props")
 
 GEOMETRY_COLLECTION = "Geometry"
@@ -65,6 +54,35 @@ DEFAULT_SCENES: dict[str, str] = {
 
 def _available_gltf_params() -> set:
     return {p.identifier for p in bpy.ops.export_scene.gltf.get_rna_type().properties}
+
+
+def _report_summary(messages: list[tuple[str, str]]) -> None:
+    if not messages:
+        return
+
+    for level, message in messages:
+        print(f"[{level}] {message}")
+
+    wm = bpy.context.window_manager
+    if wm is None:
+        return
+
+    def draw(self, _context) -> None:
+        for level, message in messages:
+            icon = {
+                "INFO": "INFO",
+                "WARN": "ERROR",
+                "ERROR": "CANCEL",
+            }.get(level, "INFO")
+            self.layout.label(text=message, icon=icon)
+
+    title = "Level Export Report"
+    if any(level == "ERROR" for level, _ in messages):
+        title = "Level Export Failed"
+    elif any(level == "WARN" for level, _ in messages):
+        title = "Level Export Finished with Warnings"
+
+    wm.popup_menu(draw, title=title, icon="INFO")
 
 
 def _build_gltf_kwargs(
@@ -112,11 +130,6 @@ def _build_gltf_kwargs(
     return kwargs
 
 
-def _has_geometry_nodes(obj: bpy.types.Object) -> bool:
-    """Return True if the object has at least one Geometry Nodes modifier."""
-    return any(mod.type == "NODES" for mod in obj.modifiers)
-
-
 def _mat4_to_godot(matrix: Matrix) -> str:
     """Convert a Blender Matrix4x4 to Godot Transform3D string (Y-up)."""
     m = matrix
@@ -137,148 +150,51 @@ def _export_single_mesh_object(
     obj: bpy.types.Object,
     filepath: str,
     export_dir: str,
+    apply_modifiers: bool = True,
 ) -> None:
     """Select only `obj` and export it as glTF."""
     bpy.ops.object.select_all(action="DESELECT")
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
-    bpy.ops.export_scene.gltf(**_build_gltf_kwargs(filepath, export_dir))
-
-
-# ---------------------------------------------------------------------------
-# Grass: collect instances via depsgraph, export each unique mesh once
-# ---------------------------------------------------------------------------
-
-class GrassMeshData:
-    """Holds export path and list of world-space transforms for one grass mesh."""
-    def __init__(self, res_path: str):
-        self.res_path = res_path          # res://assets/models/levels/grass/<name>.gltf
-        self.transforms: list[str] = []  # Godot Transform3D strings
-
-
-def collect_grass_instances(
-    gn_objs: list[bpy.types.Object],
-) -> dict[str, GrassMeshData]:
-    """
-    Iterate depsgraph.object_instances to find all instances spawned by the
-    Geometry Nodes modifiers on `gn_objs`.
-
-    Returns dict: mesh_data_name → GrassMeshData
-      - each unique mesh is exported once
-      - all instance transforms are collected per mesh
-    """
-    os.makedirs(GRASS_EXPORT_DIR, exist_ok=True)
-
-    # Set of parent object names we care about
-    gn_obj_names = {obj.name for obj in gn_objs}
-
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-
-    # mesh_data_name → GrassMeshData
-    grass_data: dict[str, GrassMeshData] = {}
-    # mesh_data_name → source object (for export)
-    mesh_source: dict[str, bpy.types.Object] = {}
-
-    for inst in depsgraph.object_instances:
-        # We only want instances whose parent is one of our GN scatter objects
-        if not inst.is_instance:
-            continue
-        parent = inst.parent
-        if parent is None or parent.original.name not in gn_obj_names:
-            continue
-        inst_obj = inst.object
-        if inst_obj.type != "MESH" or inst_obj.data is None:
-            continue
-
-        mesh_name = inst_obj.data.name
-        safe_name = mesh_name.replace(".", "_").replace(" ", "_")
-
-        if mesh_name not in grass_data:
-            res_path = f"res://assets/models/levels/grass/{safe_name}.gltf"
-            grass_data[mesh_name] = GrassMeshData(res_path)
-            mesh_source[mesh_name] = inst_obj.original  # original (non-evaluated)
-
-        # inst.matrix_world is the world transform of this instance
-        grass_data[mesh_name].transforms.append(_mat4_to_godot(inst.matrix_world))
-
-    # Export each unique mesh once
-    for mesh_name, data in grass_data.items():
-        safe_name = mesh_name.replace(".", "_").replace(" ", "_")
-        filepath = os.path.join(GRASS_EXPORT_DIR, f"{safe_name}.gltf")
-        src_obj = mesh_source[mesh_name]
-        _export_single_mesh_object(src_obj, filepath, GRASS_EXPORT_DIR)
-        print(
-            f"[OK] Grass mesh '{mesh_name}': {len(data.transforms)} instance(s) → {filepath}"
-        )
-
-    return grass_data
+    bpy.ops.export_scene.gltf(
+        **_build_gltf_kwargs(filepath, export_dir, apply_modifiers=apply_modifiers)
+    )
 
 
 # ---------------------------------------------------------------------------
 # Geometry export
 # ---------------------------------------------------------------------------
 
-def export_geometry() -> tuple[str, dict[str, GrassMeshData]]:
-    """
-    Export the 'Geometry' collection.
-
-    Regular meshes → level_01_geo.gltf (export_apply=True).
-    Meshes with Geometry Nodes modifier → instances collected via depsgraph,
-    each unique mesh exported once, transforms stored for MultiMeshInstance3D.
-
-    Returns (geo_res, grass_data):
-      geo_res    — res:// path to geo gltf, or ""
-      grass_data — dict mesh_name → GrassMeshData (may be empty)
-    """
+def export_geometry(messages: list[tuple[str, str]]) -> str:
+    """Export all mesh objects from the 'Geometry' collection into one glTF."""
     os.makedirs(GEO_EXPORT_DIR, exist_ok=True)
 
     col = bpy.data.collections.get(GEOMETRY_COLLECTION)
     if not col:
-        print(f"[WARN] Collection '{GEOMETRY_COLLECTION}' not found.")
-        return "", {}
+        messages.append(("WARN", f"Collection '{GEOMETRY_COLLECTION}' not found."))
+        return ""
 
-    regular_objs: list[bpy.types.Object] = []
-    gn_objs: list[bpy.types.Object] = []
+    geometry_objects = [obj for obj in col.all_objects if obj.type == "MESH"]
+    if not geometry_objects:
+        messages.append(("INFO", f"No mesh objects in '{GEOMETRY_COLLECTION}'."))
+        return ""
 
-    for obj in col.all_objects:
-        if obj.type != "MESH":
-            continue
-        if _has_geometry_nodes(obj):
-            gn_objs.append(obj)
-        else:
-            regular_objs.append(obj)
+    filepath = os.path.join(GEO_EXPORT_DIR, f"{_BLEND_NAME}_geo.gltf")
+    bpy.ops.object.select_all(action="DESELECT")
+    for obj in geometry_objects:
+        obj.select_set(True)
+    bpy.ops.export_scene.gltf(**_build_gltf_kwargs(filepath, GEO_EXPORT_DIR))
 
-    geo_res = ""
-
-    # --- Regular geometry ---
-    if regular_objs:
-        filepath = os.path.join(GEO_EXPORT_DIR, f"{_BLEND_NAME}_geo.gltf")
-        bpy.ops.object.select_all(action="DESELECT")
-        for obj in regular_objs:
-            obj.select_set(True)
-        bpy.ops.export_scene.gltf(**_build_gltf_kwargs(filepath, GEO_EXPORT_DIR))
-        geo_res = f"res://assets/models/levels/{_BLEND_NAME}_geo.gltf"
-        print(f"[OK] Geometry ({len(regular_objs)} object(s)): {filepath}")
-    else:
-        print(f"[INFO] No regular mesh objects in '{GEOMETRY_COLLECTION}'.")
-
-    # --- Geometry Nodes grass ---
-    grass_data: dict[str, GrassMeshData] = {}
-    if gn_objs:
-        grass_data = collect_grass_instances(gn_objs)
-        if not grass_data:
-            print("[WARN] GN objects found but no instances collected from depsgraph.")
-    else:
-        print(f"[INFO] No Geometry Nodes objects in '{GEOMETRY_COLLECTION}'.")
-
-    return geo_res, grass_data
+    geo_res = f"res://assets/models/levels/{_BLEND_NAME}_geo.gltf"
+    messages.append(("INFO", f"Geometry ({len(geometry_objects)} object(s)): {filepath}"))
+    return geo_res
 
 
 # ---------------------------------------------------------------------------
 # Props
 # ---------------------------------------------------------------------------
 
-def export_props() -> dict[str, str]:
+def export_props(messages: list[tuple[str, str]]) -> dict[str, str]:
     """
     Export each unique prop mesh once.
     Returns dict: mesh_data_name → res:// path
@@ -288,7 +204,7 @@ def export_props() -> dict[str, str]:
 
     col = bpy.data.collections.get(PROPS_COLLECTION)
     if not col:
-        print(f"[WARN] Collection '{PROPS_COLLECTION}' not found — no props exported.")
+        messages.append(("WARN", f"Collection '{PROPS_COLLECTION}' not found — no props exported."))
         return {}
 
     # Group objects by their mesh data (linked duplicates share the same mesh)
@@ -304,14 +220,20 @@ def export_props() -> dict[str, str]:
         safe_name = mesh_name.replace(".", "_").replace(" ", "_")
         filepath = os.path.join(PROPS_EXPORT_DIR, f"{safe_name}.gltf")
 
-        bpy.ops.object.select_all(action="DESELECT")
-        source.select_set(True)
-        bpy.context.view_layer.objects.active = source
-
-        bpy.ops.export_scene.gltf(**_build_gltf_kwargs(filepath, PROPS_EXPORT_DIR))
+        original_matrix = source.matrix_world.copy()
+        source.matrix_world = Matrix.Identity(4)
+        try:
+            _export_single_mesh_object(
+                source,
+                filepath,
+                PROPS_EXPORT_DIR,
+                apply_modifiers=False,
+            )
+        finally:
+            source.matrix_world = original_matrix
         res_path = f"res://assets/models/props/{safe_name}.gltf"
         mesh_to_res[mesh_name] = res_path
-        print(f"[OK] Prop '{mesh_name}' ({len(instances)} instance(s)): {filepath}")
+        messages.append(("INFO", f"Prop '{mesh_name}' ({len(instances)} instance(s)): {filepath}"))
 
     return mesh_to_res
 
@@ -342,11 +264,11 @@ def collect_prop_instances(mesh_to_res: dict[str, str]) -> list[dict]:
 # Markers
 # ---------------------------------------------------------------------------
 
-def collect_markers() -> list[dict]:
+def collect_markers(messages: list[tuple[str, str]]) -> list[dict]:
     markers = []
     col = bpy.data.collections.get(MARKERS_COLLECTION)
     if not col:
-        print(f"[WARN] Collection '{MARKERS_COLLECTION}' not found.")
+        messages.append(("WARN", f"Collection '{MARKERS_COLLECTION}' not found."))
         return markers
 
     for obj in col.all_objects:
@@ -363,7 +285,7 @@ def collect_markers() -> list[dict]:
             "transform": _mat4_to_godot_obj(obj),
         })
 
-    print(f"[OK] Markers: {len(markers)}")
+    messages.append(("INFO", f"Markers: {len(markers)}"))
     return markers
 
 
@@ -373,9 +295,9 @@ def collect_markers() -> list[dict]:
 
 def generate_tscn(
     geo_res: str,
-    grass_data: dict[str, GrassMeshData],
     prop_instances: list[dict],
     markers: list[dict],
+    messages: list[tuple[str, str]],
 ) -> None:
     os.makedirs(_SCENES_DIR, exist_ok=True)
 
@@ -388,24 +310,14 @@ def generate_tscn(
         if path and path not in unique_scenes:
             unique_scenes.append(path)
 
-    # Grass meshes are Mesh resources, not PackedScenes — handled separately
-    # res_path → internal resource id (for ext_resource)
-    grass_mesh_res_ids: dict[str, str] = {}
-    for i, (mesh_name, gd) in enumerate(grass_data.items()):
-        grass_mesh_res_ids[gd.res_path] = f"grass_{i + 1}_mesh"
-
     res_id_map = {path: f"{i + 1}_res" for i, path in enumerate(unique_scenes)}
-    load_steps = len(unique_scenes) + len(grass_mesh_res_ids) + 1
+    load_steps = len(unique_scenes) + 1
 
     lines: list[str] = [f"[gd_scene load_steps={load_steps} format=3]", ""]
 
     # PackedScene ext_resources (geo, props, markers)
     for path, res_id in res_id_map.items():
         lines.append(f'[ext_resource type="PackedScene" path="{path}" id="{res_id}"]')
-
-    # Mesh ext_resources for grass
-    for res_path, res_id in grass_mesh_res_ids.items():
-        lines.append(f'[ext_resource type="Mesh" path="{res_path}" id="{res_id}"]')
 
     lines += ["", '[node name="Level" type="Node3D"]', ""]
 
@@ -414,37 +326,6 @@ def generate_tscn(
         lines.append(
             f'[node name="Geometry" parent="." instance=ExtResource("{res_id_map[geo_res]}")]'
         )
-        lines.append("")
-
-    # Grass — one MultiMeshInstance3D per unique mesh
-    for mesh_name, gd in grass_data.items():
-        safe_name = mesh_name.replace(".", "_").replace(" ", "_")
-        mesh_res_id = grass_mesh_res_ids[gd.res_path]
-        instance_count = len(gd.transforms)
-
-        # Build the transform array for MultiMesh
-        # Godot PackedFloat32Array for MultiMesh uses 12 floats per instance
-        # (Transform3D = basis 3×3 + origin 3 = 12 floats, row-major)
-        # We write it as a sub-resource inline.
-        sub_res_id = f"{safe_name}_mm"
-
-        lines.append(f'[sub_resource type="MultiMesh" id="{sub_res_id}"]')
-        lines.append(f'transform_format = 1')  # TRANSFORM_3D
-        lines.append(f'instance_count = {instance_count}')
-        lines.append(f'mesh = ExtResource("{mesh_res_id}")')
-
-        # Build packed float array: 12 floats per instance (Transform3D row-major)
-        floats: list[str] = []
-        for tf_str in gd.transforms:
-            # tf_str is "Transform3D(a,b,c, d,e,f, g,h,i, tx,ty,tz)"
-            inner = tf_str[len("Transform3D("):-1]
-            floats.extend(v.strip() for v in inner.split(","))
-
-        lines.append(f'instance_transforms = PackedFloat32Array({", ".join(floats)})')
-        lines.append("")
-
-        lines.append(f'[node name="Grass_{safe_name}" type="MultiMeshInstance3D" parent="."]')
-        lines.append(f'multimesh = SubResource("{sub_res_id}")')
         lines.append("")
 
     # Player spawn
@@ -487,8 +368,7 @@ def generate_tscn(
     with open(tscn_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
-    total_grass = sum(len(gd.transforms) for gd in grass_data.values())
-    print(f"[OK] Scene: {tscn_path}  (grass instances: {total_grass})")
+    messages.append(("INFO", f"Scene: {tscn_path}"))
 
 
 # ---------------------------------------------------------------------------
@@ -496,25 +376,31 @@ def generate_tscn(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    messages: list[tuple[str, str]] = []
     if not bpy.data.filepath:
-        print("[ERROR] Save the .blend file before running this script.")
+        messages.append(("ERROR", "Save the .blend file before running this script."))
+        _report_summary(messages)
         return
 
-    print(f"\n=== Exporting level: {_BLEND_NAME} ===\n")
-    geo_res, grass_data = export_geometry()
-    mesh_to_res = export_props()
+    messages.append(("INFO", f"Exporting level: {_BLEND_NAME}"))
+    geo_res = export_geometry(messages)
+    mesh_to_res = export_props(messages)
     prop_instances = collect_prop_instances(mesh_to_res)
-    markers = collect_markers()
-    generate_tscn(geo_res, grass_data, prop_instances, markers)
+    markers = collect_markers(messages)
+    generate_tscn(geo_res, prop_instances, markers, messages)
 
     total_props = len(prop_instances)
     unique_meshes = len(mesh_to_res)
-    total_grass = sum(len(gd.transforms) for gd in grass_data.values())
-    print(
-        f"\n[DONE] props: {total_props} instance(s) from {unique_meshes} mesh(es), "
-        f"grass: {total_grass} instance(s) from {len(grass_data)} mesh(es)."
+    messages.append(
+        (
+            "INFO",
+            f"Done: props {total_props} instance(s) from {unique_meshes} mesh(es).",
+        )
     )
+    _report_summary(messages)
 
 
-if __name__ == "__main__":
-    main()
+# Run regardless of execution context:
+# - blender --background file.blend --python export_level.py  (__name__ == "__main__")
+# - Blender Scripting tab → Run Script                        (__name__ != "__main__")
+main()
